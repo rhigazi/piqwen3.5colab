@@ -1,0 +1,196 @@
+================================================================================
+COlab-SETUP: pi-coding-agent + qwen3.5-4B-super-coder (T4 GPU)
+
+⭐ EINFACHSTER WEG — Gesamt-Pipeline in EINEM Durchgang:
+   !bash /content/scripts/run_pipeline.sh
+   (protokolliert alles nach /content/logs/run.log; bricht bei Fehler
+   mit den letzten 40 Log-Zeilen ab — diese Ausgabe zur Analyse geben)
+
+Struktur: 2 VM-Phasen, je 1 Skript pro VM-Typ
+  • NORMALE VM (CPU-Instanz)  → Skript 1: 01_prep_cpu_instance.sh
+  • T4-GPU-VM                 → Skript 2: 02_prepare_t4_instance.sh
+                                 danach: run_pipeline.sh
+
+⚠️ Wichtig: Colab löscht /content beim Runtime-Wechsel (CPU → T4)!
+   Nur Google Drive persistiert → Skript 1 sichert alles nach Drive.
+
+⚠️ KORREKTUR zum ursprünglichen Snippet:
+  Die Datei "qwen3.5-4B-super-coder.BF16-mmproj.gguf" ist NUR der
+  Multimodal-Projektor (mmproj) — KEIN ladbares Textmodell.
+  Das korrekte Hauptmodell ist: qwen3.5-4B-super-coder.Q4_0.gguf
+  (wird bei Bedarf automatisch neu geladen, ~2 Min. — nicht gesichert).
+================================================================================
+
+────────────────────────────────────────────────────────
+AUFGABE 1 — NORMALE VM (CPU-Instanz, keine T4 nötig)
+────────────────────────────────────────────────────────
+Ziel: GPU-Quota sparen; Vorbereitung + Sicherung erledigen.
+
+Zelle (einzige Zelle in dieser VM):
+!bash /content/scripts/01_prep_cpu_instance.sh
+
+Was Skript 1 erledigt:
+  [1/3] Google Drive mounten
+  [2/3] Skripte + Notebook + Backup-Zip nach Drive sichern
+        -> /content/drive/MyDrive/pi-qwen-setup/
+  [3/3] Zusammenfassung
+
+Danach: In Colab auf T4-GPU-Runtime wechseln (Runtime → Change runtime
+type → GPU T4). /content ist danach leer — weiter mit Aufgabe 2.
+
+────────────────────────────────────────────────────────
+AUFGABE 2 — T4-GPU-VM: vorbereiten (Skript 2)
+────────────────────────────────────────────────────────
+Zelle:
+!bash /content/drive/MyDrive/pi-qwen-setup/scripts/02_prepare_t4_instance.sh
+
+Was Skript 2 erledigt:
+  [1/5] Google Drive mounten
+  [2/5] Skripte aus Drive zurück nach /content kopieren
+  [3/5] Modell Q4_0 (2.6 GB, ~2 Min.) nach /content/models laden
+  [4/5] pi-coding-agent installieren (npm)
+  [5/5] Pi-Provider konfigurieren (~/.pi/agent/models.json)
+        + Verifikation: pi --provider llama-cpp --list-models
+
+────────────────────────────────────────────────────────
+AUFGABE 3 — T4-GPU-VM: Gesamt-Pipeline (Skript 3)
+────────────────────────────────────────────────────────
+Zelle (ein Durchgang, ~20–40 Min):
+!bash /content/scripts/run_pipeline.sh
+
+Was die Pipeline erledigt:
+  Schritt 1  GPU prüfen (nvidia-smi)
+  Schritt 2  llama-cpp-python MIT CUDA kompilieren (~15–30 Min)
+             !CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python \
+               --no-binary llama-cpp-python --force-reinstall --upgrade --no-cache-dir
+             ⚠️ "--no-binary llama-cpp-python" ist PFLICHT — sonst nimmt
+                pip stillschweigend die CPU-Wheel und CMAKE_ARGS wird ignoriert!
+  Schritt 3  CUDA verifizieren: libggml-cuda.so muss existieren
+  Schritt 4  Server starten (setsid = überlebt Zellen-Ende)
+             python3 -m llama_cpp.server --model <Q4_0.gguf> \
+               --n_gpu_layers -1 --n_ctx 8192 --host 0.0.0.0 --port 8000
+  Schritt 5  Health-Check (max. 300s) + /v1/models + VRAM
+  Schritt 6  Inference-Test (Chat-Completions + tok/s)
+  Schritt 7  pi-Agent-Test (non-interactive, schreibt binary_search.py)
+  Schritt 8  Abnahme: nvidia-smi (VRAM-Belegung)
+
+────────────────────────────────────────────────────────
+TROUBLESHOOTING
+────────────────────────────────────────────────────────
+- Pipeline bricht ab: letzte 40 Zeilen aus /content/logs/run.log posten
+- Server-Log:       !cat /content/logs/llama_server.log
+- Server stoppen:   !pkill -f llama_cpp.server
+- CUDA fehlt:       !ls /usr/local/lib/python3.13/dist-packages/llama_cpp/lib/ | grep cuda
+                    (muss libggml-cuda.so zeigen — sonst Schritt 2 wiederholen)
+- Pi findet Modell: !cat ~/.pi/agent/models.json
+- Langsame Antwort: libggml-cuda.so prüfen (sonst CPU-only!)
+- Build-Fehler (CUDA 13 vs. llama.cpp): CMAKE_ARGS um
+  "-DCMAKE_CUDA_ARCHITECTURES=75" ergänzen
+- Backup-Zip:       /content/backup_pi_qwen_setup.zip (Restore: RESTORE.txt darin)
+================================================================================
+Detaillierte Einzelzellen (ohne Skripte) stehen weiter unten.
+================================================================================
+
+────────────────────────────────────────────────────────
+DETAIL: Einzelne Zellen (Referenz, falls Skripte nicht genutzt werden)
+────────────────────────────────────────────────────────
+ZELLE 1 — GPU prüfen
+!nvidia-smi
+
+ZELLE 2 — llama-cpp-python MIT CUDA kompilieren (ca. 15–30 Min)
+!CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --no-binary llama-cpp-python --force-reinstall --upgrade --no-cache-dir
+
+ZELLE 3 — CUDA-Support verifizieren
+!ls /usr/local/lib/python3.13/dist-packages/llama_cpp/lib/ | grep cuda
+# ERWARTET: libggml-cuda.so  <- muss existieren!
+
+ZELLE 4 — Server starten (Colab-sicher: überlebt das Zellen-Ende)
+import subprocess, os
+os.makedirs('/content/logs', exist_ok=True)
+subprocess.Popen(
+    ['python3', '-m', 'llama_cpp.server',
+     '--model', '/content/models/qwen3.5-4B-super-coder.Q4_0.gguf',
+     '--n_gpu_layers', '-1',
+     '--n_ctx', '8192',
+     '--host', '0.0.0.0', '--port', '8000'],
+    stdout=open('/content/logs/llama_server.log', 'w'),
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+)
+print('Server gestartet (Log: /content/logs/llama_server.log)')
+
+ZELLE 5 — Health-Check + VRAM-Verifikation
+import time, urllib.request
+for i in range(300):
+    try:
+        urllib.request.urlopen('http://localhost:8000/health', timeout=2)
+        print(f'Server bereit nach {i}s'); break
+    except Exception:
+        time.sleep(1)
+else:
+    print('FEHLER — Server-Log:')
+    print(open('/content/logs/llama_server.log').read()[-3000:])
+!curl -s http://localhost:8000/v1/models | python3 -m json.tool
+!nvidia-smi
+
+ZELLE 6 — Inference-Test (OpenAI-kompatible API)
+from openai import OpenAI
+import time
+client = OpenAI(base_url='http://localhost:8000/v1', api_key='no-key-required')
+t0 = time.time()
+resp = client.chat.completions.create(
+    model='qwen3.5-4B-super-coder.Q4_0',
+    messages=[
+        {'role': 'system', 'content': 'You are a helpful coding assistant.'},
+        {'role': 'user', 'content': 'Schreibe eine Python-Funktion fuer Binary Search. Nur Code.'},
+    ],
+    temperature=0.6, top_p=0.95, max_tokens=512,
+)
+dt = time.time() - t0
+print(f'[{dt:.1f}s | {resp.usage.completion_tokens/dt:.0f} tok/s]')
+print(resp.choices[0].message.content)
+
+ZELLE 7 — pi-coding-agent installieren (frische VM)
+!npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+!pi --version
+
+ZELLE 8 — Pi-Provider konfigurieren (frische VM)
+import json, os
+cfg = {
+    'providers': {
+        'llama-cpp': {
+            'baseUrl': 'http://localhost:8000/v1',
+            'api': 'openai-completions',
+            'apiKey': 'no-key-required',
+            'compat': {
+                'supportsDeveloperRole': False,
+                'supportsReasoningEffort': False,
+            },
+            'models': [{
+                'id': 'qwen3.5-4B-super-coder.Q4_0',
+                'name': 'Qwen 3.5 4B Super Coder (local Q4_0)',
+                'reasoning': True,
+                'input': ['text'],
+                'contextWindow': 32768,
+                'maxTokens': 8192,
+                'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0},
+            }],
+        }
+    }
+}
+os.makedirs(os.path.expanduser('~/.pi/agent'), exist_ok=True)
+with open(os.path.expanduser('~/.pi/agent/models.json'), 'w') as f:
+    json.dump(cfg, f, indent=2)
+!pi --provider llama-cpp --list-models
+
+ZELLE 9 — Agent-Test (Non-Interactive)
+%%bash
+cd /content
+mkdir -p /content/output
+pi --provider llama-cpp --model qwen3.5-4B-super-coder.Q4_0 --no-session -p "Schreibe eine Python-Funktion fuer Binary Search in /content/output/binary_search.py"
+!cat /content/output/binary_search.py
+
+ZELLE 10 — finale Abnahme: VRAM-Belegung
+!nvidia-smi
+# ERWARTET: Tesla T4, VRAM belegt durch python3 (llama-server)
+================================================================================

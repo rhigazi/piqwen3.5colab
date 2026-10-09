@@ -1,0 +1,27 @@
+BACKUP: pi-coding-agent + qwen3.5-4B-super-coder Setup
+
+ENTHALTEN:
+- scripts/               alle Skripte (Phase A, Phase B, Pipeline, Tests)
+- pi_qwen35_colab_setup.ipynb
+- AUFTRAG_STATUS.md      Aufgaben-Status / Uebergabe
+- COlab_Befehle_Zelle_fuer_Zelle.txt
+- pi_models.json         Pi-Provider-Konfiguration (~/.pi/agent/models.json)
+- MANIFEST.md5           Checksummen (ohne sich selbst)
+
+NICHT enthalten (bewusst):
+- Modell qwen3.5-4B-super-coder.Q4_0.gguf (2.6 GB)
+  Wird bei jedem Runtime-Wechsel einfach neu geladen (~2 Min.):
+    from huggingface_hub import hf_hub_download
+    hf_hub_download(repo_id='jica98/qwen3.5-4B-super-coder',
+                    filename='qwen3.5-4B-super-coder.Q4_0.gguf',
+                    local_dir='/content/models')
+
+RESTORE (frische Colab-VM):
+  1. Zip nach /content hochladen
+  2. !cd /content && unzip -o backup_pi_qwen_setup.zip -d /tmp/restore && \
+       cp -r /tmp/restore/scripts /content/ && \
+       cp /tmp/restore/*.ipynb /tmp/restore/*.md /tmp/restore/*.txt /content/ && \
+       mkdir -p ~/.pi/agent && cp /tmp/restore/pi_models.json ~/.pi/agent/models.json && \
+       chmod +x /content/scripts/*.sh
+  3. Pruefsummen: cd /tmp/restore && md5sum -c MANIFEST.md5
+  4. Weiter mit Phase B: !bash /content/scripts/02_prepare_t4_instance.sh
